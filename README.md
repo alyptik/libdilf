@@ -4,6 +4,7 @@ Dynamically load non-shared ELF executables with dlopen().
 
 ## Dependencies
 
+* gcc
 * libdl
 * libelf
 
