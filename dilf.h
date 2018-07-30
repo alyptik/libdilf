@@ -47,10 +47,13 @@
 #include <unistd.h>
 
 /*
- * version macros
+ * library version macros
+ *
+ * for hex-encoded: 0xAABB -> CC.DD (base-10)
  */
-#define LIB_DILF_MAJOR 0
-#define LIB_DILF_MINOR 1
+#define DILF_VERSION 0x0001
+#define DILF_VERSION_MAJOR 0
+#define DILF_VERSION_MINOR 1
 
 /*
  * errno, file, and line number macros
