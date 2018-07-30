@@ -1,4 +1,7 @@
-compile.*
+compile*
+parseopts*
+dlopen_libm*
+
 *cscope.out
 *cscope.in.out
 *cscope.po.out
@@ -50,4 +53,4 @@ t/*
 *.tar.gz
 debug.mk
 
-# vi:ft=gitconfig:
+# vi:ft=cfg:
