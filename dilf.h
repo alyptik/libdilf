@@ -34,17 +34,33 @@
 
 #include <assert.h>
 #include <ctype.h>
+#include <dlfcn.h>
+#include <elf.h>
 #include <errno.h>
+#include <fcntl.h>
+#include <gelf.h>
+#include <libelf.h>
 #include <limits.h>
-#include <signal.h>
+#include <linux/memfd.h>
 #include <stdbool.h>
 #include <stddef.h>
-#include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
-#include <termio.h>
+#include <sys/mman.h>
+#include <sys/stat.h>
+#include <sys/syscall.h>
+#include <sys/types.h>
+#include <sys/wait.h>
 #include <unistd.h>
+
+/*
+ * NULL-terminated string dynamic array
+ */
+struct str_list {
+	size_t cnt, max;
+	char **list;
+};
 
 /*
  * library version macros
@@ -56,55 +72,101 @@
 #define DILF_VERSION_MINOR 1
 
 /*
- * errno, file, and line number macros
- * (do _not_ use parentheses around these)
- */
-#define FSTR __FILE__, __LINE__
-#define ESTR strerror(errno), FSTR
-
-#define WARN(fmt, args...)	do { fprintf(stderr, "`%s`: [%s:%u] " fmt "\n", ESTR, args); } while (0)
-#define WARNX(fmt, args... )	do { fprintf(stderr, "[%s:%u] " fmt "\n", FSTR, args); } while (0)
-#define ERR(fmt, args...)	do { fprintf(stderr, "`%s`: [%s:%u] " fmt "\n", ESTR, args); exit(1); } while (0)
-#define ERRX(fmt, args...)	do { fprintf(stderr, "[%s:%u] " fmt "\n", FSTR, args); exit(1); } while (0)
-
-/*
  * utility macros
  */
+#undef typeof
+#define typeof __typeof__
 #define STR_LIM 4096
-#define MIN(a, b)		(((a) < (b)) ? (a) : (b))
-#define MAX(a, b)		(((a) > (b)) ? (a) : (b))
-#define ARR_LEN(arr)		((sizeof (arr)) / (sizeof *(arr)))
-#define PRINTE(fmt, args...)	fprintf(stderr, "\033[92m" fmt "\033[00m", args)
+#define PAGE_SIZE 4096
+
 
 /*
- * allocator wrappers
+ * print_dbg - print a debug message with color escapes
  */
-#define _xmalloc(type, ptr, sz, msg)			\
-	do {						\
-		void *tmp = malloc(sz);			\
-		if (!tmp)				\
-			ERR("%s", (msg));		\
-		*(type **)ptr = tmp;			\
+#define print_dbg(fmt, args...) \
+	fprintf(stderr, "\033[92m"fmt"\033[00m", args)
+
+/*
+ * print_err - print an error message if err_ptr is a pointer to errno
+ */
+#define print_err(err_ptr, fmt, args...)					\
+	do {									\
+		if ((err_ptr) == &errno) {					\
+			fprintf(stderr, "%s: ", strerror(errno));		\
+		}								\
+		fprintf(stderr, "[%s:%u] "fmt"\n", __FILE__, __LINE__, args);	\
+	} while (0)
+
+/*
+ * comparison macros
+ */
+#define type_check(x, y) \
+	(!!(sizeof((typeof(x) *)1 == (typeof(y) *)1)))
+#define is_constexpr(x) \
+	(sizeof(int) == sizeof(*(8 ? ((void *)((long)(x) * 0l)) : (int *)8)))
+#define is_arr(arr) \
+	((arr) && !__builtin_types_compatible_p(typeof(arr), typeof(&(arr)[0])))
+#define cmp(x, y, op) \
+	((x) op (y) ? (x) : (y))
+
+/*
+ * min_t - return minimum of two values, using the specified type
+ */
+
+#define min_t(type, x, y)		cmp((type)(x), (type)(y), <)
+#define min(x, y)			cmp(x, y, <)
+
+/*
+ * max_t - return maximum of two values, using the specified type
+ */
+#define max_t(type, x, y)		cmp((type)(x), (type)(y), >)
+#define max(x, y)			cmp(x, y, >)
+
+/*
+ * clamp_t - return a value clamped to a given range using a given type
+ */
+#define clamp_t(type, val, lo, hi)	min_t(type, max_t(type, val, lo), hi)
+#define clamp(val, lo, hi)		min((typeof(val)) max(val, lo), hi)
+
+/*
+ * arr_len - array length or 0 if not an array
+ */
+#define arr_len(arr)								\
+	__builtin_choose_expr(is_arr(arr),					\
+		0,								\
+		(sizeof (arr)) / (sizeof *(arr)))				\
+
+/*
+ * error-checked allocator wrappers
+ */
+#define _xmalloc(ptr, sz, msg)							\
+	do {									\
+		(ptr) = malloc((sz));						\
+		if (!(ptr)) {							\
+			print_err(&errno, "%s", msg);				\
+		}								\
 	} while (0)
 #undef xmalloc
 #define xmalloc _xmalloc
 
-#define _xcalloc(type, ptr, nmemb, sz, msg)		\
-	do {						\
-		void *tmp = calloc((nmemb), (sz));	\
-		if (!tmp)				\
-			ERR("%s", (msg));		\
-		*(type **)ptr = tmp;			\
+#define _xcalloc(nmemb, ptr, sz, msg)						\
+	do {									\
+		(ptr) = calloc((nmemb), (sz));					\
+		if (!(ptr)) {							\
+			print_err(&errno, "%s", msg);				\
+		}								\
 	} while (0)
 #undef xcalloc
 #define xcalloc _xcalloc
 
-#define _xrealloc(type, ptr, sz, msg)			\
-	do {						\
-		void *tmp[2] = {0, *(type **)ptr};	\
-		if (!(tmp[0] = realloc(tmp[1], sz)))	\
-			ERR("%s", (msg));		\
-		*(type **)ptr = tmp[0];			\
+#define _xrealloc(ptr, sz, msg)							\
+	do {									\
+		typeof(ptr) _tmp;						\
+		if (!(_tmp = realloc((ptr), (sz)))) {				\
+			print_err(&errno, "%s", msg);				\
+			free(ptr);						\
+		}								\
+		(ptr) = _tmp;							\
 	} while (0)
 #undef xrealloc
 #define xrealloc _xrealloc
