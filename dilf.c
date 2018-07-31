@@ -10,7 +10,7 @@
 #include <dilf.h>
 
 /*
- * stdlib abort() wrappers
+ * stdlib error-checked wrappers
  */
 static void xfclose(FILE **restrict out_file)
 {
@@ -75,7 +75,7 @@ static void strmv(ptrdiff_t off, char *restrict dest, char const *restrict src) 
 	} else {
 		dest_ptr = dest + off;
 	}
-	/* sanity check before copy */
+	/* do sanity checks before copy */
 	if (!src_end || !dest_ptr) {
 		print_err(0, "%s", "strmv() string not null-terminated");
 		return;
@@ -91,15 +91,15 @@ static void strmv(ptrdiff_t off, char *restrict dest, char const *restrict src) 
 /*
  * `struct str_list` helper functions
  */
-static ptrdiff_t free_str_list(struct str_list *restrict plist)
+static ssize_t free_str_list(struct str_list *restrict plist)
 {
 	size_t null_cnt = 0;
-	/* return -1 if passed NULLs */
+	/* return -1 if passed NULL */
 	if (!plist || !plist->list) {
 		return -1;
 	}
 	for (size_t i = 0; i < plist->cnt; i++) {
-		/* if 0 increment counter and skip */
+		/* if NULL increment counter and skip */
 		if (!plist->list[i]) {
 			null_cnt++;
 			continue;
@@ -120,7 +120,7 @@ static void init_str_list(struct str_list *restrict list_struct, char *restrict 
 	list_struct->max = 1;
 	xcalloc(1, list_struct->list, sizeof *list_struct->list, "list_ptr calloc()");
 	if (!init_str || !list_struct->list) {
-		return;
+		abort();
 	}
 	list_struct->cnt++;
 	xcalloc(1, list_struct->list[list_struct->cnt - 1], strlen(init_str) + 1, "init_str_list()");
@@ -131,7 +131,7 @@ static void append_str(struct str_list *restrict list_struct, char const *restri
 {
 	if (!list_struct->list) {
 		print_err(0, "%s", "0 list_struct->list passed to append_str()");
-		abort();
+		return;
 	}
 	/* realloc the next power of two if cnt reaches current size */
 	if (++list_struct->cnt >= list_struct->max) {
@@ -151,6 +151,9 @@ static void append_str(struct str_list *restrict list_struct, char const *restri
 		return;
 	}
 	xcalloc(1, list_struct->list[list_struct->cnt - 1], strlen(string) + pad + 1, "append_str()");
+	if (!list_struct->list[list_struct->cnt - 1]) {
+		return;
+	}
 	strmv(pad, list_struct->list[list_struct->cnt - 1], string);
 }
 
@@ -186,7 +189,7 @@ static void pipe_fd(int in_fd, int out_fd)
 				continue;
 			}
 			print_err(&errno, "%s", "error reading from input fd");
-			break;
+			abort();
 		}
 		/* EOF */
 		if (!ret) {
